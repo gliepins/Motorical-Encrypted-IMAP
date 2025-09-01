@@ -1,0 +1,13 @@
+[Unit]
+Description=Motorical Encrypted IMAP API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/motorical/encimap.env
+WorkingDirectory=/root/encrypted-imap/services/api
+ExecStart=/usr/bin/node server.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

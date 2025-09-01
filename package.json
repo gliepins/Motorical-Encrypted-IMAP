@@ -1,0 +1,7 @@
+{
+  "name": "motorical-encrypted-imap",
+  "private": false,
+  "version": "0.1.0",
+  "workspaces": ["services/*", "pkg/*"],
+  "scripts": {"bootstrap": "npm --workspaces install"}
+}
