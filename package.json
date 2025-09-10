@@ -2,6 +2,19 @@
   "name": "motorical-encrypted-imap",
   "private": false,
   "version": "0.1.0",
-  "workspaces": ["services/*", "pkg/*"],
-  "scripts": {"bootstrap": "npm --workspaces install"}
+  "type": "module",
+  "workspaces": [
+    "services/*",
+    "pkg/*"
+  ],
+  "scripts": {
+    "bootstrap": "npm --workspaces install",
+    "test": "node test-simple.mjs",
+    "test-adapters": "node test-adapters.mjs"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "js-yaml": "^4.1.0",
+    "node-fetch": "^3.3.2"
+  }
 }

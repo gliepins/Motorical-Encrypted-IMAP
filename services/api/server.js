@@ -45,7 +45,7 @@ app.get('/s2s/v1/vaultboxes', async (req, res) => {
     const userId = (req.query.user_id || '').toString();
     if (!userId) return res.status(400).json({ success: false, error: 'missing user_id' });
     const r = await pool.query(
-      `SELECT v.id, v.domain, v.name,
+      `SELECT v.id, v.domain, v.name, v.alias,
               EXISTS (SELECT 1 FROM vaultbox_certs c WHERE c.vaultbox_id = v.id) AS has_certs,
               (SELECT COUNT(*) FROM messages m WHERE m.vaultbox_id = v.id) AS messages
          FROM vaultboxes v
@@ -86,8 +86,8 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
   if (!user_id || !domain || !name) return res.status(400).json({ success: false, error: 'missing fields' });
   try {
     const r = await pool.query(
-      'INSERT INTO vaultboxes (user_id, domain, name) VALUES ($1,$2,$3) RETURNING id',
-      [user_id, String(domain || '').toLowerCase(), name]
+      'INSERT INTO vaultboxes (user_id, domain, name, alias) VALUES ($1,$2,$3,$4) RETURNING id',
+      [user_id, String(domain || '').toLowerCase(), name, alias || null]
     );
     const vbId = r.rows[0].id;
 
@@ -559,8 +559,8 @@ app.post('/s2s/v1/domains', async (req, res) => {
       vb = existing.rows[0].id;
     } else {
       const ins = await pool.query(
-        'INSERT INTO vaultboxes (user_id, domain, name) VALUES ($1,$2,$3) RETURNING id',
-        [user_id, normDomain, name || normDomain]
+        'INSERT INTO vaultboxes (user_id, domain, name, alias) VALUES ($1,$2,$3,$4) RETURNING id',
+        [user_id, normDomain, name || normDomain, alias || null]
       );
       vb = ins.rows[0].id;
     }
@@ -653,5 +653,377 @@ app.delete('/s2s/v1/vaultboxes/:id', async (req, res) => {
     return res.status(500).json({ success: false, error: e.message });
   }
 });
+
+// ====================================================================
+// VAULTBOX SMTP CREDENTIALS ENDPOINTS (NEW CLEAN SYSTEM)
+// ====================================================================
+
+// Helper function to generate secure passwords
+function generateSecurePassword(length = 24) {
+  const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789!@#$%^&*_-';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(Math.random() * charset.length);
+    password += charset[randomIndex];
+  }
+  return password;
+}
+
+// Helper function removed - now uses unified username generation
+
+// Create SMTP credentials for vaultbox
+app.post('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+    const { host, port, security_type } = req.body || {};
+
+    // Verify vaultbox exists
+    const vaultboxResult = await pool.query('SELECT domain FROM vaultboxes WHERE id = $1', [vaultboxId]);
+    if (vaultboxResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'vaultbox not found' });
+    }
+
+    const domain = vaultboxResult.rows[0].domain;
+
+    // Check if credentials already exist
+    const existingResult = await pool.query('SELECT id FROM vaultbox_smtp_credentials WHERE vaultbox_id = $1', [vaultboxId]);
+    if (existingResult.rows.length > 0) {
+      return res.status(400).json({ success: false, error: 'SMTP credentials already exist for this vaultbox' });
+    }
+
+    // Check if IMAP credentials already exist to use the same username
+    let username;
+    const existingImapResult = await pool.query('SELECT username FROM imap_app_credentials WHERE vaultbox_id = $1', [vaultboxId]);
+    
+    if (existingImapResult.rows.length > 0) {
+      // Use existing IMAP username for SMTP to ensure they match
+      username = existingImapResult.rows[0].username;
+      console.log(`[encimap-api] Using existing IMAP username for SMTP: ${username}`);
+    } else {
+      // Generate new unified username
+      username = await generateVaultboxSmtpUsername(domain, vaultboxId);
+    }
+    
+    const password = generateSecurePassword();
+    
+    // Hash password using bcrypt - for now use a simple approach
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Create credentials
+    const credentialsData = {
+      vaultbox_id: vaultboxId,
+      username,
+      password_hash: passwordHash,
+      host: host || 'mail.motorical.com',
+      port: port || 587,
+      security_type: security_type || 'STARTTLS',
+      enabled: true
+    };
+
+    const result = await pool.query(`
+      INSERT INTO vaultbox_smtp_credentials (vaultbox_id, username, password_hash, host, port, security_type, enabled)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id, created_at
+    `, [credentialsData.vaultbox_id, credentialsData.username, credentialsData.password_hash, 
+        credentialsData.host, credentialsData.port, credentialsData.security_type, credentialsData.enabled]);
+
+    // Update vaultbox to mark SMTP as enabled
+    await pool.query('UPDATE vaultboxes SET smtp_enabled = true WHERE id = $1', [vaultboxId]);
+
+    console.log(`[encimap-api] Created SMTP credentials for vaultbox ${vaultboxId}: ${username}`);
+
+    res.json({
+      success: true,
+      data: {
+        credentials: {
+          id: result.rows[0].id,
+          vaultbox_id: vaultboxId,
+          username,
+          password, // Return plaintext password only on creation
+          host: credentialsData.host,
+          port: credentialsData.port,
+          security_type: credentialsData.security_type,
+          created_at: result.rows[0].created_at
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[encimap-api] Error creating SMTP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get SMTP credentials for vaultbox (without password)
+app.get('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    const result = await pool.query(`
+      SELECT id, vaultbox_id, username, host, port, security_type, created_at, updated_at, 
+             last_used, messages_sent_count, last_message_sent, enabled
+      FROM vaultbox_smtp_credentials 
+      WHERE vaultbox_id = $1 AND enabled = true
+    `, [vaultboxId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'no SMTP credentials found' });
+    }
+
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('[encimap-api] Error getting SMTP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Regenerate SMTP password
+app.post('/s2s/v1/vaultboxes/:id/smtp-credentials/regenerate', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    const existingResult = await pool.query(`
+      SELECT id, username, host, port, security_type 
+      FROM vaultbox_smtp_credentials 
+      WHERE vaultbox_id = $1 AND enabled = true
+    `, [vaultboxId]);
+
+    if (existingResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'no SMTP credentials found' });
+    }
+
+    const newPassword = generateSecurePassword();
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    await pool.query(`
+      UPDATE vaultbox_smtp_credentials 
+      SET password_hash = $1, updated_at = now() 
+      WHERE vaultbox_id = $2
+    `, [passwordHash, vaultboxId]);
+
+    const creds = existingResult.rows[0];
+    console.log(`[encimap-api] Regenerated password for ${creds.username}`);
+
+    res.json({
+      success: true,
+      data: {
+        credentials: {
+          vaultbox_id: vaultboxId,
+          username: creds.username,
+          password: newPassword, // Return new plaintext password
+          host: creds.host,
+          port: creds.port,
+          security_type: creds.security_type
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[encimap-api] Error regenerating password:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete SMTP credentials
+app.delete('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    const result = await pool.query('DELETE FROM vaultbox_smtp_credentials WHERE vaultbox_id = $1', [vaultboxId]);
+
+    if (result.rowCount > 0) {
+      // Update vaultbox to mark SMTP as disabled
+      await pool.query('UPDATE vaultboxes SET smtp_enabled = false WHERE id = $1', [vaultboxId]);
+      console.log(`[encimap-api] Deleted SMTP credentials for vaultbox ${vaultboxId}`);
+      res.json({ success: true, message: 'SMTP credentials deleted successfully' });
+    } else {
+      res.status(404).json({ success: false, error: 'no SMTP credentials found' });
+    }
+  } catch (error) {
+    console.error('[encimap-api] Error deleting SMTP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ====================================================================
+// UNIFIED IMAP CREDENTIALS ENDPOINTS (SAME USERNAME AS SMTP)
+// ====================================================================
+
+// Create or get IMAP credentials for vaultbox (matches SMTP username)
+app.post('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    // Verify vaultbox exists and get user_id
+    const vaultboxResult = await pool.query('SELECT domain, user_id FROM vaultboxes WHERE id = $1', [vaultboxId]);
+    if (vaultboxResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Vaultbox not found' });
+    }
+
+    const { domain, user_id } = vaultboxResult.rows[0];
+
+    // Check if IMAP credentials already exist
+    const existingResult = await pool.query('SELECT * FROM imap_app_credentials WHERE vaultbox_id = $1', [vaultboxId]);
+    if (existingResult.rows.length > 0) {
+      // Return existing credentials (without password)
+      const existing = existingResult.rows[0];
+      return res.json({
+        success: true,
+        data: {
+          username: existing.username,
+          vaultbox_id: vaultboxId,
+          created_at: existing.created_at
+        }
+      });
+    }
+
+    // Check if SMTP credentials already exist to use the same username
+    let username;
+    const existingSmtpResult = await pool.query('SELECT username FROM vaultbox_smtp_credentials WHERE vaultbox_id = $1', [vaultboxId]);
+    
+    if (existingSmtpResult.rows.length > 0) {
+      // Use existing SMTP username for IMAP to ensure they match
+      username = existingSmtpResult.rows[0].username;
+      console.log(`[encimap-api] Using existing SMTP username for IMAP: ${username}`);
+    } else {
+      // Generate new unified username
+      username = await generateUnifiedUsername(domain, vaultboxId);
+    }
+    
+    const password = generateSecurePassword();
+    
+    // Hash password using bcrypt
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Create IMAP credentials
+    const result = await pool.query(`
+      INSERT INTO imap_app_credentials (user_id, vaultbox_id, username, password_hash)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, created_at
+    `, [user_id, vaultboxId, username, passwordHash]);
+
+    console.log(`[encimap-api] Created IMAP credentials for vaultbox ${vaultboxId}: ${username}`);
+
+    res.json({
+      success: true,
+      data: {
+        id: result.rows[0].id,
+        vaultbox_id: vaultboxId,
+        username,
+        password, // Return plaintext password only on creation
+        created_at: result.rows[0].created_at
+      }
+    });
+  } catch (error) {
+    console.error('[encimap-api] Error creating IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get IMAP credentials for vaultbox (without password)
+app.get('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    const result = await pool.query(`
+      SELECT username, created_at 
+      FROM imap_app_credentials 
+      WHERE vaultbox_id = $1
+    `, [vaultboxId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'IMAP credentials not found' });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        username: result.rows[0].username,
+        vaultbox_id: vaultboxId,
+        created_at: result.rows[0].created_at
+      }
+    });
+  } catch (error) {
+    console.error('[encimap-api] Error retrieving IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Regenerate IMAP password (keep same username)
+app.post('/s2s/v1/vaultboxes/:id/imap-credentials/regenerate', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    // Check if credentials exist
+    const existingResult = await pool.query('SELECT username FROM imap_app_credentials WHERE vaultbox_id = $1', [vaultboxId]);
+    if (existingResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'IMAP credentials not found' });
+    }
+
+    const newPassword = generateSecurePassword();
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    await pool.query(`
+      UPDATE imap_app_credentials 
+      SET password_hash = $1, updated_at = now() 
+      WHERE vaultbox_id = $2
+    `, [passwordHash, vaultboxId]);
+
+    const creds = existingResult.rows[0];
+    console.log(`[encimap-api] Regenerated IMAP password for ${creds.username}`);
+
+    res.json({
+      success: true,
+      data: {
+        vaultbox_id: vaultboxId,
+        username: creds.username,
+        password: newPassword // Return new plaintext password
+      }
+    });
+  } catch (error) {
+    console.error('[encimap-api] Error regenerating IMAP password:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ====================================================================
+// HELPER FUNCTIONS FOR UNIFIED USERNAME GENERATION
+// ====================================================================
+
+/**
+ * Generate a unified username for both IMAP and SMTP credentials
+ * Format: encimap-{domain-with-hyphens}-{random-suffix}
+ * This ensures both IMAP and SMTP use the same standardized format
+ */
+async function generateUnifiedUsername(domain, vaultboxId) {
+  // Normalize domain (replace dots with hyphens, remove special chars)
+  const normalizedDomain = domain
+    .toLowerCase()
+    .replace(/\./g, '-')
+    .replace(/[^a-z0-9\-]/g, '');
+  
+  // Generate a short random suffix for uniqueness
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  
+  // Create unified username format
+  const username = `encimap-${normalizedDomain}-${randomSuffix}`;
+  
+  console.log(`[encimap-api] Generated unified username: ${username} for domain: ${domain}`);
+  return username;
+}
+
+/**
+ * Legacy function for SMTP (now uses unified generation)
+ */
+async function generateVaultboxSmtpUsername(domain, vaultboxId) {
+  return await generateUnifiedUsername(domain, vaultboxId);
+}
+
+// Password generation function already defined above
 
 app.listen(PORT, () => console.log(`[encimap-api] listening on ${PORT}`));
