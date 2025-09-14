@@ -547,6 +547,118 @@ app.post('/s2s/v1/vaultboxes/:id/imap-credentials/regenerate', async (req, res) 
   }
 });
 
+// Get IMAP credentials for vaultbox (without password)
+app.get('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    // Verify vaultbox exists and user has access
+    const vaultbox = await adapters.storage.findById('vaultboxes', vaultboxId);
+    if (!vaultbox) {
+      return res.status(404).json({ success: false, error: 'vaultbox not found' });
+    }
+
+    // Check if this is a service-to-service call or user owns the vaultbox
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userOwnsVaultbox = req.user.id === vaultbox.user_id;
+    
+    if (!isServiceCall && !userOwnsVaultbox) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Get IMAP credentials (without password)
+    const result = await adapters.storage.find('imap_app_credentials', { vaultbox_id: vaultboxId });
+    
+    if (!result.rows || result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'IMAP credentials not found' });
+    }
+
+    const credentials = result.rows[0];
+    
+    res.json({
+      success: true,
+      data: {
+        username: credentials.username,
+        vaultbox_id: vaultboxId,
+        created_at: credentials.created_at
+      }
+    });
+  } catch (error) {
+    console.error('[EncimapAPI] Error getting IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get latest active IMAP credentials for user (username only)
+app.get('/s2s/v1/imap-credentials', async (req, res) => {
+  try {
+    const userId = req.query.user_id || req.user.id;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'missing user_id' });
+    }
+
+    // Check if this is a service-to-service call or user is requesting their own data
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userRequestingOwnData = req.user.id === userId;
+    
+    if (!isServiceCall && !userRequestingOwnData) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Get latest IMAP credentials for user
+    const result = await adapters.storage.query(`
+      SELECT username FROM imap_app_credentials 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC LIMIT 1
+    `, [userId]);
+
+    const row = (result.rows && result.rows.length > 0) ? result.rows[0] : null;
+    
+    res.json({ 
+      success: true, 
+      data: row 
+    });
+  } catch (error) {
+    console.error('[EncimapAPI] Error getting user IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// List all IMAP credentials for user
+app.get('/s2s/v1/imap-credentials/list', async (req, res) => {
+  try {
+    const userId = req.query.user_id || req.user.id;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'missing user_id' });
+    }
+
+    // Check if this is a service-to-service call or user is requesting their own data
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userRequestingOwnData = req.user.id === userId;
+    
+    if (!isServiceCall && !userRequestingOwnData) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Get all IMAP credentials for user with vaultbox details
+    const result = await adapters.storage.query(`
+      SELECT a.username, a.created_at, a.vaultbox_id, v.domain
+      FROM imap_app_credentials a
+      LEFT JOIN vaultboxes v ON v.id = a.vaultbox_id
+      WHERE a.user_id = $1
+      ORDER BY a.created_at DESC
+    `, [userId]);
+
+    res.json({ 
+      success: true, 
+      data: result.rows || []
+    });
+  } catch (error) {
+    console.error('[EncimapAPI] Error listing user IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ====================================================================
 // CERTIFICATE MANAGEMENT ENDPOINTS (EXISTING FUNCTIONALITY)
 // ====================================================================
