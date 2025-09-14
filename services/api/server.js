@@ -203,7 +203,7 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
     res.json({ 
       success: true, 
       data: { 
-        id: vaultboxId,
+        vaultbox_id: vaultboxId,
         domain: domainLower,
         name: name.trim(),
         has_certs: false,
