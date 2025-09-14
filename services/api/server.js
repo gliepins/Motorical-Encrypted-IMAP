@@ -449,6 +449,54 @@ app.delete('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
   }
 });
 
+// Get usage statistics for user's vaultboxes
+app.get('/s2s/v1/usage', async (req, res) => {
+  try {
+    const userId = req.query.user_id || req.user.id;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'missing user_id' });
+    }
+
+    // Check permission
+    const hasPermission = await adapters.auth.hasPermission(
+      req.user.id, 'read', 'usage', { user_id: userId }
+    );
+    if (!hasPermission && req.user.id !== userId) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Get usage statistics with message counts and storage
+    const result = await adapters.storage.query(`
+      SELECT 
+        v.id as vaultbox_id,
+        v.domain,
+        COUNT(m.id) as message_count,
+        COALESCE(SUM(m.size_bytes), 0) as total_bytes,
+        MAX(m.received_at) as last_received
+      FROM vaultboxes v
+      LEFT JOIN messages m ON m.vaultbox_id = v.id
+      WHERE v.user_id = $1
+      GROUP BY v.id, v.domain
+      ORDER BY last_received DESC NULLS LAST, v.created_at DESC
+    `, [userId]);
+
+    const usage = result.rows.map(row => ({
+      vaultbox_id: row.vaultbox_id,
+      domain: row.domain,
+      message_count: Number(row.message_count || 0),
+      total_bytes: Number(row.total_bytes || 0),
+      last_received: row.last_received
+    }));
+
+    console.log(`[EncimapAPI] Usage query for user ${userId}: ${usage.length} vaultboxes, ${usage.reduce((sum, u) => sum + u.message_count, 0)} total messages`);
+
+    res.json({ success: true, data: usage });
+  } catch (error) {
+    console.error('[EncimapAPI] Error getting usage statistics:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ====================================================================
 // VAULTBOX IMAP CREDENTIALS ENDPOINTS
 // ====================================================================
