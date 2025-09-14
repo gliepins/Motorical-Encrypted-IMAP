@@ -360,11 +360,11 @@ app.post('/s2s/v1/vaultboxes/:id/smtp-credentials/regenerate', async (req, res) 
       return res.status(404).json({ success: false, error: 'vaultbox not found' });
     }
 
-    // Check permission
-    const hasPermission = await adapters.auth.hasPermission(
-      req.user.id, 'update', 'credentials', { vaultbox_id: vaultboxId }
-    );
-    if (!hasPermission && req.user.id !== vaultbox.user_id) {
+    // Check if this is a service-to-service call or user owns the vaultbox
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userOwnsVaultbox = req.user.id === vaultbox.user_id;
+    
+    if (!isServiceCall && !userOwnsVaultbox) {
       return res.status(403).json({ success: false, error: 'access denied' });
     }
 
@@ -484,6 +484,65 @@ app.post('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
     });
   } catch (error) {
     console.error('[EncimapAPI] Error creating IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Regenerate IMAP password for vaultbox (keep same username)
+app.post('/s2s/v1/vaultboxes/:id/imap-credentials/regenerate', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    // Verify vaultbox exists and user has access
+    const vaultbox = await adapters.storage.findById('vaultboxes', vaultboxId);
+    if (!vaultbox) {
+      return res.status(404).json({ success: false, error: 'vaultbox not found' });
+    }
+
+    // Check if this is a service-to-service call or user owns the vaultbox
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userOwnsVaultbox = req.user.id === vaultbox.user_id;
+    
+    if (!isServiceCall && !userOwnsVaultbox) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Check if IMAP credentials exist
+    const existing = await adapters.storage.find('imap_app_credentials', { vaultbox_id: vaultboxId });
+    if (!existing.rows || existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'IMAP credentials not found' });
+    }
+
+    const existingCred = existing.rows[0];
+    
+    // Generate new password
+    const newPassword = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    
+    // Hash password using bcrypt
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    // Update password in database
+    await adapters.storage.update('imap_app_credentials', 
+      { vaultbox_id: vaultboxId }, 
+      { 
+        password_hash: passwordHash,
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    console.log(`[EncimapAPI] Regenerated IMAP password for vaultbox ${vaultboxId}: ${existingCred.username}`);
+
+    res.json({
+      success: true,
+      data: {
+        vaultbox_id: vaultboxId,
+        username: existingCred.username,
+        password: newPassword // Return new plaintext password
+      }
+    });
+  } catch (error) {
+    console.error('[EncimapAPI] Error regenerating IMAP password:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
