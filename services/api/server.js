@@ -216,6 +216,62 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
   }
 });
 
+// Delete vaultbox
+app.delete('/s2s/v1/vaultboxes/:id', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+    
+    if (!vaultboxId) {
+      return res.status(400).json({ success: false, error: 'missing vaultbox id' });
+    }
+
+    // Verify vaultbox exists and user has access
+    const vaultbox = await adapters.storage.findById('vaultboxes', vaultboxId);
+    if (!vaultbox) {
+      return res.status(404).json({ success: false, error: 'vaultbox not found' });
+    }
+
+    // Check if this is a service-to-service call or user owns the vaultbox
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userOwnsVaultbox = req.user.id === vaultbox.user_id;
+    
+    if (!isServiceCall && !userOwnsVaultbox) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Remove MTA routing for the domain
+    try {
+      await adapters.mta.removeDomainRoute(vaultbox.domain);
+      console.log(`[EncimapAPI] Removed MTA routing for domain ${vaultbox.domain}`);
+    } catch (mtaError) {
+      console.warn('[EncimapAPI] MTA routing removal failed:', mtaError.message);
+      // Continue - vaultbox deletion is more important
+    }
+
+    // Delete vaultbox and cascade to related data (messages, certs, smtp_credentials)
+    await adapters.storage.delete('vaultboxes', { id: vaultboxId });
+
+    // Remove maildir if it exists
+    try {
+      const fs = await import('fs');
+      const path = `/var/mail/vaultboxes/${vaultboxId}`;
+      if (fs.existsSync(path)) {
+        fs.rmSync(path, { recursive: true, force: true });
+        console.log(`[EncimapAPI] Removed maildir ${path}`);
+      }
+    } catch (error) {
+      console.warn('[EncimapAPI] Maildir removal failed:', error.message);
+      // Continue - this is not critical
+    }
+
+    console.log(`[EncimapAPI] Deleted vaultbox ${vaultboxId} (${vaultbox.domain})`);
+    res.json({ success: true, message: 'Vaultbox deleted successfully' });
+  } catch (error) {
+    console.error('[EncimapAPI] Error deleting vaultbox:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ====================================================================
 // VAULTBOX SMTP CREDENTIALS ENDPOINTS (NEW CLEAN SYSTEM)
 // ====================================================================
