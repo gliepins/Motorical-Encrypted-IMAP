@@ -296,19 +296,50 @@ app.post('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
       return res.status(403).json({ success: false, error: 'access denied' });
     }
 
-    // Create SMTP credentials using dedicated service
-    const credentials = await vaultboxSmtpService.createCredentials(vaultboxId, {
-      host,
-      port,
-      securityType: security_type
+    // Check if IMAP credentials already exist to use the same username
+    let username;
+    const existingImap = await adapters.storage.find('imap_app_credentials', { vaultbox_id: vaultboxId });
+    
+    if (existingImap.rows && existingImap.rows.length > 0) {
+      // Use existing IMAP username for SMTP to ensure they match
+      username = existingImap.rows[0].username;
+      console.log(`[EncimapAPI] Using existing IMAP username for SMTP: ${username}`);
+    } else {
+      // Generate new unified username
+      username = generateUnifiedUsername(vaultbox.domain, vaultboxId);
+    }
+
+    const password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    
+    // Hash password using bcrypt
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Create SMTP credentials with unified username
+    const credentials = await adapters.storage.insert('vaultbox_smtp_credentials', {
+      vaultbox_id: vaultboxId,
+      username: username,
+      password_hash: passwordHash,
+      host: host || 'mail.motorical.com',
+      port: port || 587,
+      security_type: security_type || 'STARTTLS'
     });
 
-    console.log(`[EncimapAPI] Created SMTP credentials for vaultbox ${vaultboxId}: ${credentials.username}`);
+    console.log(`[EncimapAPI] Created SMTP credentials for vaultbox ${vaultboxId}: ${username}`);
 
     res.json({
       success: true,
       data: {
-        credentials,
+        credentials: {
+          id: credentials.id,
+          vaultbox_id: vaultboxId,
+          username: username,
+          password: password,
+          host: host || 'mail.motorical.com',
+          port: port || 587,
+          security_type: security_type || 'STARTTLS',
+          created_at: new Date().toISOString()
+        },
         message: 'SMTP credentials created successfully'
       }
     });
@@ -455,8 +486,19 @@ app.post('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
       });
     }
 
-    // Generate new credentials
-    const username = `encimap-${vaultbox.domain.replace(/\./g, '-')}-${Math.random().toString(36).slice(2, 8)}`;
+    // Check if SMTP credentials already exist to use the same username
+    let username;
+    const existingSmtp = await adapters.storage.find('vaultbox_smtp_credentials', { vaultbox_id: vaultboxId });
+    
+    if (existingSmtp.rows && existingSmtp.rows.length > 0) {
+      // Use existing SMTP username for IMAP to ensure they match
+      username = existingSmtp.rows[0].username;
+      console.log(`[EncimapAPI] Using existing SMTP username for IMAP: ${username}`);
+    } else {
+      // Generate new unified username
+      username = generateUnifiedUsername(vaultbox.domain, vaultboxId);
+    }
+    
     const password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
     
     // Hash password using bcrypt
@@ -1032,6 +1074,32 @@ app.get('/s2s/v1/admin/adapters/status', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ====================================================================
+// HELPER FUNCTIONS FOR UNIFIED USERNAME GENERATION
+// ====================================================================
+
+/**
+ * Generate a unified username for both IMAP and SMTP credentials
+ * Format: encimap-{domain-with-hyphens}-{random-suffix}
+ * This ensures both IMAP and SMTP use the same standardized format
+ */
+function generateUnifiedUsername(domain, vaultboxId) {
+  // Normalize domain (replace dots with hyphens, remove special chars)
+  const normalizedDomain = domain
+    .toLowerCase()
+    .replace(/\./g, '-')
+    .replace(/[^a-z0-9\-]/g, '');
+  
+  // Generate a short random suffix for uniqueness
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  
+  // Create unified username format
+  const username = `encimap-${normalizedDomain}-${randomSuffix}`;
+  
+  console.log(`[EncimapAPI] Generated unified username: ${username} for domain: ${domain}`);
+  return username;
+}
 
 // Start server
 const PORT = process.env.PORT || 4301;
