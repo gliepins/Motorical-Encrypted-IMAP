@@ -1,0 +1,90 @@
+# Motorical Encrypted IMAP - Production Configuration
+# Production-ready adapter configuration for clean vaultbox-motorblock separation
+
+api:
+  prefix: "/s2s/v1"
+  port: 4301
+  cors:
+    enabled: true
+    origins: ["http://localhost:3000", "https://motorical.com"]
+
+adapters:
+  # Authentication - JWT token validation with Motorical backend
+  auth:
+    type: "jwt"
+    config:
+      public_key_base64: "${S2S_JWT_PUBLIC_BASE64}"
+      algorithm: "RS256"
+      audience: "encimap.svc"
+      clock_tolerance: 10
+  
+  # User Management - Motorical platform integration
+  user:
+    type: "motorical"
+    config:
+      api_base_url: "http://localhost:3001"
+      database_url: "${MOTORICAL_DATABASE_URL}"
+  
+  # MTA Integration - Postfix configuration
+  mta:
+    type: "postfix"
+    config:
+      transport_map: "/etc/postfix/transport"
+      main_config: "/etc/postfix/main.cf"
+      reload_command: ["systemctl", "reload", "postfix"]
+      restart_command: ["systemctl", "restart", "postfix"]
+      status_command: ["systemctl", "status", "postfix"]
+      encimap_pipe_prefix: "encimap-pipe"
+  
+  # Storage - PostgreSQL with Encrypted IMAP database (separate from Motorical)
+  storage:
+    type: "postgresql"
+    config:
+      url: "${ENCIMAP_DATABASE_URL}"
+      pool_size: 10
+      idle_timeout: 30000
+      connection_timeout: 2000
+
+# Production environment settings
+environments:
+  production:
+    api:
+      port: 4301
+    adapters:
+      auth:
+        config:
+          clock_tolerance: 5  # Stricter in production
+      storage:
+        config:
+          pool_size: 20
+          idle_timeout: 60000
+
+# Health monitoring
+health:
+  enabled: true
+  path: "/health"
+  include_details: true
+  adapters:
+    - auth
+    - user
+    - mta
+    - storage
+
+# Logging
+logging:
+  level: "info"
+  adapters: true
+  performance: true
+  errors: true
+
+# Security
+security:
+  require_tls: true
+  cors_strict: false
+  audit_logging: true
+
+# Rate limiting
+rate_limiting:
+  enabled: true
+  requests_per_minute: 100
+  burst_limit: 20

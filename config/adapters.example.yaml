@@ -1,0 +1,158 @@
+# Motorical Encrypted IMAP - Adapter Configuration
+# Copy this file to adapters.yaml and customize for your environment
+
+# API service configuration
+api:
+  prefix: "/s2s/v1"  # Changed from /api/v1 to match existing endpoint
+  port: 4301
+  cors:
+    enabled: true
+    origins: ["http://localhost:3000", "https://motorical.com"]
+
+# Adapter configurations
+adapters:
+  # Authentication adapter - JWT token validation
+  auth:
+    type: "jwt"
+    config:
+      # Base64 encoded public key for JWT verification
+      public_key_base64: "${S2S_JWT_PUBLIC_BASE64}"
+      algorithm: "RS256"
+      audience: "encimap.svc"
+      issuer: null  # Optional: restrict to specific issuer
+      clock_tolerance: 10  # seconds
+  
+  # User management adapter - integrates with Motorical platform
+  user:
+    type: "motorical"
+    config:
+      api_base_url: "http://localhost:3001"
+      api_token: "${MOTORICAL_API_TOKEN}"  # Optional for internal calls
+  
+  # MTA integration adapter - Postfix configuration
+  mta:
+    type: "postfix"
+    config:
+      transport_map: "/etc/postfix/transport"
+      main_config: "/etc/postfix/main.cf"
+      reload_command: ["systemctl", "reload", "postfix"]
+      restart_command: ["systemctl", "restart", "postfix"]
+      status_command: ["systemctl", "status", "postfix"]
+      encimap_pipe_prefix: "encimap-pipe"
+  
+  # Storage adapter - PostgreSQL database
+  storage:
+    type: "postgresql"
+    config:
+      url: "${ENCIMAP_DATABASE_URL}"
+      pool_size: 10
+      idle_timeout: 30000
+      connection_timeout: 2000
+
+# Environment-specific overrides
+environments:
+  development:
+    api:
+      port: 4301
+    adapters:
+      auth:
+        config:
+          clock_tolerance: 30  # More lenient in dev
+      storage:
+        config:
+          pool_size: 5
+  
+  production:
+    api:
+      port: 4301
+    adapters:
+      auth:
+        config:
+          clock_tolerance: 5  # Stricter in production
+      storage:
+        config:
+          pool_size: 20
+
+# Health check configuration
+health:
+  enabled: true
+  path: "/health"
+  include_details: true
+  adapters:
+    - auth
+    - user
+    - mta
+    - storage
+
+# Logging configuration
+logging:
+  level: "info"  # debug, info, warn, error
+  adapters: true
+  performance: true
+  errors: true
+
+# Platform integration examples (choose one)
+platforms:
+  # Standalone deployment with API keys
+  standalone:
+    adapters:
+      auth:
+        type: "api_key"
+        config:
+          valid_keys: ["${ENCIMAP_API_KEY}"]
+  
+  # WordPress integration
+  wordpress:
+    adapters:
+      auth:
+        type: "custom"
+        module: "./adapters/examples/wordpress/auth.js"
+        config:
+          wp_url: "https://yoursite.com"
+          wp_api_key: "${WP_API_KEY}"
+      user:
+        type: "custom"
+        module: "./adapters/examples/wordpress/user.js"
+        config:
+          wp_database_url: "${WP_DB_URL}"
+          tables:
+            users: "wp_users"
+            usermeta: "wp_usermeta"
+  
+  # Laravel integration
+  laravel:
+    adapters:
+      auth:
+        type: "custom"
+        module: "./adapters/examples/laravel/auth.js"
+        config:
+          laravel_url: "https://yourapp.com"
+          api_token: "${LARAVEL_API_TOKEN}"
+      user:
+        type: "database"
+        config:
+          url: "${LARAVEL_DATABASE_URL}"
+          tables:
+            users: "users"
+            domains: "user_domains"
+            subscriptions: "subscriptions"
+
+# Feature flags
+features:
+  webhook_notifications: true
+  usage_tracking: true
+  automatic_cleanup: true
+  metrics_collection: true
+  
+# Rate limiting
+rate_limiting:
+  enabled: true
+  requests_per_minute: 100
+  burst_limit: 20
+
+# Security settings
+security:
+  require_tls: true
+  cors_strict: false
+  api_key_rotation: true
+  audit_logging: true
