@@ -125,7 +125,7 @@ app.get('/s2s/v1/vaultboxes', async (req, res) => {
     // Get vaultboxes with certificate and SMTP info
     const result = await adapters.storage.query(`
       SELECT 
-        v.id, v.domain, v.name, v.status, v.smtp_enabled, v.created_at,
+        v.id, v.domain, v.name, v.alias, v.status, v.smtp_enabled, v.created_at,
         EXISTS (SELECT 1 FROM vaultbox_certs c WHERE c.vaultbox_id = v.id) AS has_certs,
         (SELECT COUNT(*) FROM messages m WHERE m.vaultbox_id = v.id) AS message_count,
         vsc.username as smtp_username,
@@ -179,6 +179,7 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
       user_id: userId,
       domain: domainLower,
       name: name.trim(),
+      alias: alias ? alias.trim().toLowerCase() : null,
       status: 'active',
       smtp_enabled: false
     };
