@@ -199,10 +199,10 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
     }
 
     console.log(`[EncimapAPI] Created vaultbox ${vaultboxId} for domain ${domainLower}`);
-
-    res.json({ 
-      success: true, 
-      data: { 
+    
+    res.json({
+      success: true,
+      data: {
         vaultbox_id: vaultboxId,
         domain: domainLower,
         name: name.trim(),
@@ -305,8 +305,8 @@ app.post('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
 
     console.log(`[EncimapAPI] Created SMTP credentials for vaultbox ${vaultboxId}: ${credentials.username}`);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: {
         credentials,
         message: 'SMTP credentials created successfully'
@@ -339,8 +339,8 @@ app.get('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
 
     const credentials = await vaultboxSmtpService.getCredentials(vaultboxId);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: credentials 
     });
   } catch (error) {
@@ -372,8 +372,8 @@ app.post('/s2s/v1/vaultboxes/:id/smtp-credentials/regenerate', async (req, res) 
 
     console.log(`[EncimapAPI] Regenerated SMTP password for vaultbox ${vaultboxId}`);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: {
         credentials: newCredentials,
         message: 'SMTP password regenerated successfully'
@@ -419,8 +419,149 @@ app.delete('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
 });
 
 // ====================================================================
+// VAULTBOX IMAP CREDENTIALS ENDPOINTS
+// ====================================================================
+
+// Create IMAP credentials for vaultbox
+app.post('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
+  try {
+    const vaultboxId = req.params.id;
+
+    // Verify vaultbox exists and user has access
+    const vaultbox = await adapters.storage.findById('vaultboxes', vaultboxId);
+    if (!vaultbox) {
+      return res.status(404).json({ success: false, error: 'vaultbox not found' });
+    }
+
+    // Check if this is a service-to-service call or user owns the vaultbox
+    const isServiceCall = req.user.id === 'backend.motorical' || req.user.id === 'motorical-backend';
+    const userOwnsVaultbox = req.user.id === vaultbox.user_id;
+    
+    if (!isServiceCall && !userOwnsVaultbox) {
+      return res.status(403).json({ success: false, error: 'access denied' });
+    }
+
+    // Check if IMAP credentials already exist
+    const existing = await adapters.storage.find('imap_app_credentials', { vaultbox_id: vaultboxId });
+    if (existing.rows && existing.rows.length > 0) {
+      const existingCred = existing.rows[0];
+      return res.json({
+        success: true,
+        data: {
+          username: existingCred.username,
+          vaultbox_id: vaultboxId,
+          created_at: existingCred.created_at
+        }
+      });
+    }
+
+    // Generate new credentials
+    const username = `encimap-${vaultbox.domain.replace(/\./g, '-')}-${Math.random().toString(36).slice(2, 8)}`;
+    const password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    
+    // Hash password using bcrypt
+    const bcrypt = await import('bcrypt');
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Create IMAP credentials
+    const result = await adapters.storage.insert('imap_app_credentials', {
+      user_id: vaultbox.user_id,
+      vaultbox_id: vaultboxId,
+      username: username,
+      password_hash: passwordHash
+    });
+
+    console.log(`[EncimapAPI] Created IMAP credentials for vaultbox ${vaultboxId}: ${username}`);
+
+    res.json({
+      success: true,
+      data: {
+        username: username,
+        password: password,  // Only returned on creation
+        vaultbox_id: vaultboxId,
+        created_at: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('[EncimapAPI] Error creating IMAP credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ====================================================================
 // CERTIFICATE MANAGEMENT ENDPOINTS (EXISTING FUNCTIONALITY)
 // ====================================================================
+
+// Generate certificate using server-side OpenSSL
+app.post('/s2s/v1/generate-certificate', async (req, res) => {
+  try {
+    const { common_name, email, organization } = req.body || {};
+    if (!common_name || !email) {
+      return res.status(400).json({ success: false, error: 'missing common_name or email' });
+    }
+
+    const fs = await import('fs');
+    const os = await import('os');
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const run = promisify(execFile);
+
+    const tmp = fs.mkdtempSync(os.tmpdir() + '/cert-gen-');
+    const keyPath = tmp + '/private.key';
+    const crtPath = tmp + '/certificate.crt';
+    const configPath = tmp + '/cert.conf';
+    
+    // Create OpenSSL config for S/MIME certificate
+    const config = `[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = ${common_name}
+emailAddress = ${email}
+O = ${organization || 'Motorical Encrypted IMAP (Self-signed)'}
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment, dataEncipherment
+extendedKeyUsage = emailProtection, clientAuth
+subjectAltName = email:${email}
+`;
+    
+    fs.writeFileSync(configPath, config);
+    
+    // Generate private key (2048-bit RSA)
+    await run('openssl', ['genrsa', '-out', keyPath, '2048']);
+    
+    // Generate self-signed certificate
+    await run('openssl', ['req', '-new', '-x509', '-key', keyPath, '-out', crtPath, '-days', '365', '-config', configPath]);
+    
+    // Read generated files
+    const pemKey = fs.readFileSync(keyPath, 'utf8');
+    const pemCert = fs.readFileSync(crtPath, 'utf8');
+    
+    // Cleanup
+    try { 
+      fs.rmSync(tmp, { recursive: true, force: true }); 
+    } catch(_) {}
+    
+    console.log(`[EncimapAPI] Generated certificate for ${common_name} (${email})`);
+
+    res.json({
+      success: true,
+      data: {
+        private_key: pemKey,
+        certificate: pemCert,
+        common_name,
+        email
+      }
+    });
+  } catch (error) {
+    console.error('[EncimapAPI] Certificate generation failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Upload certificate for vaultbox
 app.post('/s2s/v1/vaultboxes/:id/certs', async (req, res) => {
@@ -460,12 +601,12 @@ app.post('/s2s/v1/vaultboxes/:id/certs', async (req, res) => {
 
     console.log(`[EncimapAPI] Added certificate to vaultbox ${vaultboxId}`);
 
-    res.json({ 
-      success: true, 
-      data: { 
+    res.json({
+      success: true,
+      data: {
         id: result.id, 
         fingerprint: fingerprint 
-      } 
+      }
     });
   } catch (error) {
     console.error('[EncimapAPI] Error adding certificate:', error);
@@ -567,12 +708,12 @@ app.post('/s2s/v1/domains', async (req, res) => {
       console.warn('[EncimapAPI] MTA routing setup failed:', mtaError.message);
     }
 
-    res.json({ 
-      success: true, 
-      data: { 
-        vaultbox_id: vaultboxId, 
+    res.json({
+      success: true,
+      data: {
+        vaultbox_id: vaultboxId,
         domain: domainLower 
-      } 
+      }
     });
   } catch (error) {
     console.error('[EncimapAPI] Error registering domain:', error);
