@@ -814,6 +814,117 @@ app.post('/s2s/v1/imap-credentials', async (req, res) => {
   }
 });
 
+// Generate P12 bundle from PEM key and certificate
+app.post('/s2s/v1/p12', async (req, res) => {
+  try {
+    const { pem_key, pem_cert, password, friendly_name } = req.body || {};
+    if (!pem_key || !pem_cert || typeof password !== 'string') {
+      return res.status(400).json({ success: false, error: 'missing pem_key, pem_cert or password' });
+    }
+
+    const fs = await import('fs');
+    const os = await import('os');
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const run = promisify(execFile);
+
+    const tmp = fs.mkdtempSync(os.tmpdir() + '/p12-');
+    const keyPath = tmp + '/key.pem';
+    const crtPath = tmp + '/cert.pem';
+    const outPath = tmp + '/bundle.p12';
+    
+    fs.writeFileSync(keyPath, pem_key);
+    fs.writeFileSync(crtPath, pem_cert);
+    
+    const name = friendly_name || 'Encrypted IMAP';
+    await run('openssl', ['pkcs12', '-export', '-inkey', keyPath, '-in', crtPath, '-name', name, '-passout', `pass:${password}`, '-out', outPath]);
+    
+    const buf = fs.readFileSync(outPath);
+    
+    res.setHeader('Content-Type', 'application/x-pkcs12');
+    res.setHeader('Content-Disposition', 'attachment; filename="encrypted-imap.p12"');
+    res.end(buf);
+    
+    try { 
+      fs.rmSync(tmp, { recursive: true, force: true }); 
+    } catch(_) {}
+    
+    console.log(`[EncimapAPI] Generated P12 bundle: ${name}`);
+  } catch (error) {
+    console.error('[EncimapAPI] P12 generation failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Generate ZIP bundle containing P12 and PEM files
+app.post('/s2s/v1/bundle', async (req, res) => {
+  try {
+    const { pem_key, pem_cert, password, friendly_name } = req.body || {};
+    if (!pem_key || !pem_cert || typeof password !== 'string') {
+      return res.status(400).json({ success: false, error: 'missing pem_key, pem_cert or password' });
+    }
+
+    const fs = await import('fs');
+    const os = await import('os');
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const run = promisify(execFile);
+    const JSZip = (await import('jszip')).default;
+
+    const zip = new JSZip();
+    const tmp = fs.mkdtempSync(os.tmpdir() + '/bundle-');
+    const keyPath = tmp + '/key.pem';
+    const crtPath = tmp + '/cert.pem';
+    const outPath = tmp + '/bundle.p12';
+    
+    fs.writeFileSync(keyPath, pem_key);
+    fs.writeFileSync(crtPath, pem_cert);
+    
+    const name = friendly_name || 'Encrypted IMAP';
+    await run('openssl', ['pkcs12', '-export', '-inkey', keyPath, '-in', crtPath, '-name', name, '-passout', `pass:${password}`, '-out', outPath]);
+    const p12Buffer = fs.readFileSync(outPath);
+    
+    // Add files to ZIP
+    zip.file('encrypted-imap.p12', p12Buffer);
+    zip.file('smime.crt', pem_cert);
+    zip.file('README.txt', `Encrypted IMAP Certificate Bundle
+
+Generated: ${new Date().toISOString()}
+Password for P12: ${password}
+
+Files included:
+- encrypted-imap.p12: PKCS#12 bundle for mail client installation
+- smime.crt: S/MIME certificate for encryption
+
+Installation:
+1. Install encrypted-imap.p12 in your mail client (iOS Mail, Apple Mail, Outlook, Thunderbird)
+2. Import smime.crt for S/MIME encryption
+3. Configure IMAP: mail.motorical.com:993 (SSL/TLS)
+
+Support: https://motorical.com/docs/encrypted-imap
+`);
+
+    const zipBuffer = await zip.generateAsync({ 
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 }
+    });
+    
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="encrypted-imap-bundle.zip"');
+    res.end(zipBuffer);
+    
+    try { 
+      fs.rmSync(tmp, { recursive: true, force: true }); 
+    } catch(_) {}
+    
+    console.log(`[EncimapAPI] Generated certificate bundle: ${name}`);
+  } catch (error) {
+    console.error('[EncimapAPI] Bundle generation failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ====================================================================
 // DOMAIN MANAGEMENT ENDPOINTS
 // ====================================================================
