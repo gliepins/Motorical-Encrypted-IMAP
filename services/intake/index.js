@@ -96,6 +96,30 @@ async function getCertFingerprints(pems) {
   return fps;
 }
 
+// Dynamic vaultbox provisioning endpoint
+app.post('/intake/dynamic', async (req, res) => {
+  try {
+    const emailAddress = String(req.query.email || '').trim().toLowerCase();
+    if (!emailAddress) {
+      return res.status(400).json({ ok: false, error: 'missing email address' });
+    }
+
+    // Parse email address
+    const [localPart, domain] = emailAddress.split('@');
+    if (!localPart || !domain) {
+      return res.status(400).json({ ok: false, error: 'invalid email format' });
+    }
+
+    // Find or create vaultbox for this email address
+    let vaultboxId = await findOrCreateVaultbox(localPart, domain);
+    
+    return await processEmailToVaultbox(vaultboxId, req.body, res);
+  } catch (error) {
+    console.error('[encimap-intake] Dynamic processing error:', error);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post('/intake/test', async (req, res) => {
   try {
     const vaultboxId = String(req.query.vaultbox_id || '').trim();
@@ -103,13 +127,96 @@ app.post('/intake/test', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'missing vaultbox_id' });
     }
 
+    return await processEmailToVaultbox(vaultboxId, req.body, res);
+  } catch (error) {
+    console.error('[encimap-intake] Processing error:', error);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Helper function to find or create vaultbox
+async function findOrCreateVaultbox(localPart, domain) {
+  try {
+    // First, try to find existing vaultbox with this exact alias
+    const existing = await pool.query(
+      'SELECT id FROM vaultboxes WHERE domain = $1 AND alias = $2',
+      [domain, localPart]
+    );
+    
+    if (existing.rows.length > 0) {
+      console.log(`[encimap-intake] Found existing vaultbox for ${localPart}@${domain}: ${existing.rows[0].id}`);
+      return existing.rows[0].id;
+    }
+
+    // Get the user_id from any existing vaultbox for this domain
+    const domainVaultbox = await pool.query(
+      'SELECT user_id FROM vaultboxes WHERE domain = $1 LIMIT 1',
+      [domain]
+    );
+    
+    if (domainVaultbox.rows.length === 0) {
+      throw new Error(`No user found for domain ${domain}`);
+    }
+    
+    const userId = domainVaultbox.rows[0].user_id;
+    
+    // Create new vaultbox for this specific email address
+    const newVaultbox = await pool.query(
+      'INSERT INTO vaultboxes (user_id, domain, name, alias) VALUES ($1, $2, $3, $4) RETURNING id',
+      [userId, domain, `${localPart.charAt(0).toUpperCase() + localPart.slice(1)} Encrypted Mailbox`, localPart]
+    );
+    
+    const newVaultboxId = newVaultbox.rows[0].id;
+    console.log(`[encimap-intake] Created new vaultbox for ${localPart}@${domain}: ${newVaultboxId}`);
+    
+    // Generate certificate for this specific email identity
+    await generateVaultboxCertificate(localPart, domain, newVaultboxId);
+    
+    // Update transport mapping
+    await updateTransportMapping(localPart, domain, newVaultboxId);
+    
+    return newVaultboxId;
+  } catch (error) {
+    console.error('[encimap-intake] Error in findOrCreateVaultbox:', error);
+    throw error;
+  }
+}
+
+// Helper function to update Postfix transport mapping
+async function updateTransportMapping(localPart, domain, vaultboxId) {
+  try {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const run = promisify(execFile);
+    
+    const transportEntry = `${localPart}@${domain}\tencimap-pipe:${vaultboxId}`;
+    
+    // Add the new mapping to transport file
+    await run('bash', ['-c', `echo "${transportEntry}" >> /etc/postfix/transport`]);
+    
+    // Rebuild transport map
+    await run('postmap', ['/etc/postfix/transport']);
+    
+    // Reload Postfix
+    await run('systemctl', ['reload', 'postfix']);
+    
+    console.log(`[encimap-intake] Updated transport mapping: ${transportEntry}`);
+  } catch (error) {
+    console.error('[encimap-intake] Error updating transport mapping:', error);
+    // Don't throw - email can still be processed even if transport update fails
+  }
+}
+
+// Extract email processing logic into reusable function  
+async function processEmailToVaultbox(vaultboxId, emailBody, res) {
+  try {
     const maildirNew = path.join(MAILDIR_ROOT, vaultboxId, 'Maildir', 'new');
     ensureDirectory(path.join(MAILDIR_ROOT, vaultboxId, 'Maildir'));
     ensureDirectory(maildirNew);
 
     const filename = generateMaildirFilename();
     const outPath = path.join(maildirNew, filename);
-    const inputBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body || ''), 'utf8');
+    const inputBuf = Buffer.isBuffer(emailBody) ? emailBody : Buffer.from(String(emailBody || ''), 'utf8');
 
     // Fetch certs; require at least one
     const pems = await getVaultboxCerts(vaultboxId);
@@ -150,11 +257,13 @@ app.post('/intake/test', async (req, res) => {
         try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
       }
     }
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
+  } catch (error) {
+    console.error('[encimap-intake] Error processing email to vaultbox:', error);
+    return res.status(500).json({ ok: false, error: error.message });
   }
-});
+}
 
+// PORT already defined at the top of the file
 app.listen(PORT, () => {
   console.log(`[encimap-intake] listening on ${PORT}, maildir root ${MAILDIR_ROOT}`);
 });

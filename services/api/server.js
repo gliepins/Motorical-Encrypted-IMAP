@@ -187,12 +187,19 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
     const result = await adapters.storage.insert('vaultboxes', vaultboxData);
     const vaultboxId = result.id;
 
-    // Add MTA routing for the domain (not per-vaultbox, per-domain)
+    // Add MTA routing for the specific email address (not domain-wide)
     try {
-      await adapters.mta.addDomainRoute(domainLower, vaultboxId, {
-        priority: 10,
-        route_type: 'encrypted_imap'
-      });
+      if (alias) {
+        // Create email-specific routing: alias@domain -> vaultbox
+        const emailAddress = `${alias}@${domainLower}`;
+        await adapters.mta.addEmailRoute(emailAddress, vaultboxId, {
+          priority: 10,
+          route_type: 'encrypted_imap'
+        });
+        console.log(`[EncimapAPI] Added email-specific route: ${emailAddress} -> ${vaultboxId}`);
+      } else {
+        console.warn('[EncimapAPI] No alias provided, skipping MTA route creation');
+      }
     } catch (mtaError) {
       console.warn('[EncimapAPI] MTA routing setup failed:', mtaError.message);
       // Continue - vaultbox is created, routing can be fixed later
@@ -239,16 +246,21 @@ app.delete('/s2s/v1/vaultboxes/:id', async (req, res) => {
       return res.status(403).json({ success: false, error: 'access denied' });
     }
 
-    // Remove MTA routing for the domain
+    // Remove MTA routing for the specific email address
     try {
-      await adapters.mta.removeDomainRoute(vaultbox.domain);
-      console.log(`[EncimapAPI] Removed MTA routing for domain ${vaultbox.domain}`);
+      if (vaultbox.alias) {
+        const emailAddress = `${vaultbox.alias}@${vaultbox.domain}`;
+        await adapters.mta.removeEmailRoute(emailAddress);
+        console.log(`[EncimapAPI] Removed MTA routing for email ${emailAddress}`);
+    } else {
+        console.warn('[EncimapAPI] No alias found, skipping MTA route removal');
+      }
     } catch (mtaError) {
       console.warn('[EncimapAPI] MTA routing removal failed:', mtaError.message);
       // Continue - vaultbox deletion is more important
     }
 
-    // Delete vaultbox and cascade to related data (messages, certs, smtp_credentials)
+    // Delete vaultbox and cascade to related data (messages, certs, smtp_credentials, imap_credentials)
     await adapters.storage.delete('vaultboxes', { id: vaultboxId });
 
     // Remove maildir if it exists
@@ -308,7 +320,7 @@ app.post('/s2s/v1/vaultboxes/:id/smtp-credentials', async (req, res) => {
       // Generate new unified username
       username = generateUnifiedUsername(vaultbox.domain, vaultboxId);
     }
-
+    
     const password = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
     
     // Hash password using bcrypt
@@ -614,11 +626,11 @@ app.post('/s2s/v1/vaultboxes/:id/imap-credentials/regenerate', async (req, res) 
 
     // Update password in database
     await adapters.storage.update('imap_app_credentials', 
-      { vaultbox_id: vaultboxId }, 
       { 
         password_hash: passwordHash,
         updated_at: new Date().toISOString()
-      }
+      },
+      { vaultbox_id: vaultboxId }
     );
 
     console.log(`[EncimapAPI] Regenerated IMAP password for vaultbox ${vaultboxId}: ${existingCred.username}`);
@@ -664,7 +676,7 @@ app.get('/s2s/v1/vaultboxes/:id/imap-credentials', async (req, res) => {
     }
 
     const credentials = result.rows[0];
-    
+
     res.json({
       success: true,
       data: {

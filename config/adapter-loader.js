@@ -198,8 +198,14 @@ export class AdapterLoader {
 
     // Register user adapters
     adapterFactory.register('user', 'motorical', (config) => {
-      // Inject storage adapter dependency
-      config.storageAdapter = this.adapters.storage;
+      // Create separate storage adapter for Motorical database access
+      config.motoricalStorageAdapter = new PostgreSQLStorageAdapter({
+        url: config.database_url,
+        pool_size: 5,
+        idle_timeout: 30000,
+        connection_timeout: 2000
+      });
+      config.storageAdapter = this.adapters.storage; // For encrypted IMAP data
       config.authAdapter = this.adapters.auth;
       return new MotoricaUserAdapter(config);
     });

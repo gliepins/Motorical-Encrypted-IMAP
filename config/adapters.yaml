@@ -24,6 +24,7 @@ adapters:
     config:
       api_base_url: "http://localhost:3001"
       database_url: "${MOTORICAL_DATABASE_URL}"
+      use_api: false  # Use direct database access for better performance
   
   # MTA Integration - Postfix configuration
   mta:

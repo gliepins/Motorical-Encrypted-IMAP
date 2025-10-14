@@ -12,18 +12,22 @@ export class MotoricaUserAdapter extends UserAdapter {
     super(config);
     this.apiBaseUrl = config.apiBaseUrl || config.base_url || 'http://localhost:3001';
     this.apiToken = config.apiToken || config.api_token;
-    this.storageAdapter = config.storageAdapter; // Reference to storage adapter
+    this.storageAdapter = config.storageAdapter; // Reference to encrypted IMAP storage adapter
+    this.motoricalStorageAdapter = config.motoricalStorageAdapter; // Reference to Motorical database adapter
     this.authAdapter = config.authAdapter; // Reference to auth adapter
     
     if (!this.storageAdapter) {
       throw new Error('Storage adapter is required for Motorical user management');
+    }
+    if (!this.motoricalStorageAdapter) {
+      throw new Error('Motorical storage adapter is required for user data access');
     }
   }
 
   async getUser(userId) {
     try {
       // Query user from main Motorical database
-      const result = await this.storageAdapter.findById('users', userId);
+      const result = await this.motoricalStorageAdapter.findById('users', userId);
       
       if (!result) {
         throw new Error(`User ${userId} not found`);
@@ -50,8 +54,8 @@ export class MotoricaUserAdapter extends UserAdapter {
 
   async getUserDomains(userId) {
     try {
-      // Get verified domains for this user
-      const domains = await this.storageAdapter.find('domains', {
+      // Get verified domains for this user  
+      const domains = await this.motoricalStorageAdapter.find('domains', {
         user_id: userId,
         verified: true
       }, {
@@ -76,7 +80,7 @@ export class MotoricaUserAdapter extends UserAdapter {
     try {
       // Get user's current subscription from Stripe integration
       const user = await this.getUser(userId);
-      const subscription = await this.storageAdapter.find('subscriptions', {
+      const subscription = await this.motoricalStorageAdapter.find('subscriptions', {
         user_id: userId,
         status: 'active'
       }, {
@@ -194,7 +198,7 @@ export class MotoricaUserAdapter extends UserAdapter {
   async verifyDomain(userId, domain) {
     try {
       // Check if domain is already verified
-      const existingDomain = await this.storageAdapter.find('domains', {
+      const existingDomain = await this.motoricalStorageAdapter.find('domains', {
         user_id: userId,
         domain: domain.toLowerCase()
       }, { limit: 1 });
@@ -223,7 +227,7 @@ export class MotoricaUserAdapter extends UserAdapter {
 
       if (dnsCheck.verified) {
         // Update domain as verified
-        await this.storageAdapter.update('domains', 
+        await this.motoricalStorageAdapter.update('domains', 
           { 
             verified: true, 
             verified_at: new Date(),
@@ -256,7 +260,7 @@ export class MotoricaUserAdapter extends UserAdapter {
       const normalizedDomain = domain.toLowerCase().trim();
       
       // Check if domain already exists
-      const existing = await this.storageAdapter.find('domains', {
+      const existing = await this.motoricalStorageAdapter.find('domains', {
         user_id: userId,
         domain: normalizedDomain
       }, { limit: 1 });
@@ -269,7 +273,7 @@ export class MotoricaUserAdapter extends UserAdapter {
       const verificationToken = this._generateVerificationToken();
 
       // Add domain to database
-      const result = await this.storageAdapter.insert('domains', {
+      const result = await this.motoricalStorageAdapter.insert('domains', {
         user_id: userId,
         domain: normalizedDomain,
         verified: false,
@@ -296,7 +300,7 @@ export class MotoricaUserAdapter extends UserAdapter {
 
   async removeDomain(userId, domain) {
     try {
-      const result = await this.storageAdapter.delete('domains', {
+      const result = await this.motoricalStorageAdapter.delete('domains', {
         user_id: userId,
         domain: domain.toLowerCase()
       });
@@ -311,11 +315,11 @@ export class MotoricaUserAdapter extends UserAdapter {
     const startTime = Date.now();
     
     try {
-      // Test database connectivity via storage adapter
-      await this.storageAdapter.query('SELECT 1');
+      // Test database connectivity via motorical storage adapter
+      await this.motoricalStorageAdapter.query('SELECT 1');
       
       // Test user table access
-      const userCount = await this.storageAdapter.count('users');
+      const userCount = await this.motoricalStorageAdapter.count('users');
       
       return {
         healthy: true,
@@ -343,7 +347,7 @@ export class MotoricaUserAdapter extends UserAdapter {
   // Private helper methods
   async _getUserPlan(userId) {
     try {
-      const subscription = await this.storageAdapter.find('subscriptions', {
+      const subscription = await this.motoricalStorageAdapter.find('subscriptions', {
         user_id: userId,
         status: 'active'
       }, {

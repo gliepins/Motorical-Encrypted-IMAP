@@ -10,6 +10,14 @@
 
 Motorical Encrypted IMAP provides **automatic server-side encryption** of ANY inbound email without requiring sender cooperation. Unlike existing solutions that need bilateral setup, this system encrypts emails from Gmail, Outlook, or any email provider automatically while maintaining true zero-knowledge storage.
 
+## 📖 **Complete Documentation**
+
+**👉 [Encrypted IMAP Complete Guide](./docs/ENCRYPTED_IMAP_COMPLETE_GUIDE.md)** - **Comprehensive system documentation**
+
+**Quick References:**
+- **[API Quick Reference](./docs/API_QUICK_REFERENCE.md)** - Fast API lookup
+- **[Documentation Index](./docs/README.md)** - All documentation links
+
 ### **🚀 Key Innovation: Universal Inbound Email Encryption**
 
 - ✅ **Automatic Encryption**: No sender setup required

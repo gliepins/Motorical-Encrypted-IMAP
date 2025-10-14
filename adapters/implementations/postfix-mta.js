@@ -67,6 +67,52 @@ export class PostfixMTAAdapter extends MTAAdapter {
     }
   }
 
+  async addEmailRoute(emailAddress, vaultboxId, options = {}) {
+    try {
+      const normalizedEmail = emailAddress.toLowerCase().trim();
+      const priority = options.priority || ROUTE_PRIORITY.NORMAL;
+      
+      // Ensure transport map file exists
+      this._ensureTransportMapExists();
+      
+      // Remove any existing routes for this specific email
+      await this.removeEmailRoute(normalizedEmail);
+      
+      // Add new email-specific route (takes precedence over domain routes)
+      const transportEntry = `${normalizedEmail}\t${this.encimapPipePrefix}:${vaultboxId}`;
+      this._addLineToFile(this.transportMapPath, transportEntry);
+      
+      // Update transport map database
+      await this._runCommand('postmap', [this.transportMapPath]);
+      
+      // Add domain to virtual mailbox domains if not already there
+      const domain = normalizedEmail.split('@')[1];
+      await this._addVirtualMailboxDomain(domain);
+      
+      // Log route addition if storage adapter available
+      if (this.storageAdapter) {
+        try {
+          await this.storageAdapter.insert('mta_routes', {
+            email_address: normalizedEmail,
+            domain: domain,
+            vaultbox_id: vaultboxId,
+            priority: priority,
+            active: true,
+            created_at: new Date(),
+            route_type: 'encrypted_imap_email',
+            options: JSON.stringify(options)
+          });
+        } catch (error) {
+          console.warn('Failed to log email route addition:', error.message);
+        }
+      }
+      
+      console.log(`[PostfixMTA] Added email route: ${normalizedEmail} -> ${this.encimapPipePrefix}:${vaultboxId}`);
+    } catch (error) {
+      throw new Error(`Failed to add email route: ${error.message}`);
+    }
+  }
+
   async removeDomainRoute(domain) {
     try {
       const normalizedDomain = domain.toLowerCase().trim();
@@ -95,6 +141,34 @@ export class PostfixMTAAdapter extends MTAAdapter {
       console.log(`[PostfixMTA] Removed route: ${normalizedDomain}`);
     } catch (error) {
       throw new Error(`Failed to remove domain route: ${error.message}`);
+    }
+  }
+
+  async removeEmailRoute(emailAddress) {
+    try {
+      const normalizedEmail = emailAddress.toLowerCase().trim();
+      
+      // Remove specific email route from transport map
+      this._removeLineFromFile(this.transportMapPath, new RegExp(`^${this._escapeRegex(normalizedEmail)}\\s+`));
+      
+      // Update transport map database
+      await this._runCommand('postmap', [this.transportMapPath]);
+      
+      // Log route removal if storage adapter available
+      if (this.storageAdapter) {
+        try {
+          await this.storageAdapter.update('mta_routes', 
+            { active: false, removed_at: new Date() },
+            { email_address: normalizedEmail, active: true }
+          );
+        } catch (error) {
+          console.warn('Failed to log email route removal:', error.message);
+        }
+      }
+      
+      console.log(`[PostfixMTA] Removed email route: ${normalizedEmail}`);
+    } catch (error) {
+      throw new Error(`Failed to remove email route: ${error.message}`);
     }
   }
 

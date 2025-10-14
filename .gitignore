@@ -1,3 +1,17 @@
 node_modules
 .env
 dist
+
+# Test files
+test*.p12
+test*.eml
+test*.mjs
+test*.sh
+jar.txt
+refresh.json
+google.com*.xml
+*.crt
+*.key
+
+# Usage reports
+usage-report*.csv
