@@ -122,10 +122,10 @@ app.get('/s2s/v1/vaultboxes', async (req, res) => {
       return res.status(403).json({ success: false, error: 'access denied' });
     }
 
-    // Get vaultboxes with certificate and SMTP info
+    // Get vaultboxes with certificate and SMTP info (includes mailbox_type)
     const result = await adapters.storage.query(`
       SELECT 
-        v.id, v.domain, v.name, v.alias, v.status, v.smtp_enabled, v.created_at,
+        v.id, v.domain, v.name, v.alias, v.status, v.smtp_enabled, v.mailbox_type, v.created_at,
         EXISTS (SELECT 1 FROM vaultbox_certs c WHERE c.vaultbox_id = v.id) AS has_certs,
         (SELECT COUNT(*) FROM messages m WHERE m.vaultbox_id = v.id) AS message_count,
         vsc.username as smtp_username,
@@ -147,14 +147,23 @@ app.get('/s2s/v1/vaultboxes', async (req, res) => {
   }
 });
 
-// Create new vaultbox
+// Create new vaultbox (supports both encrypted and simple mailbox types)
 app.post('/s2s/v1/vaultboxes', async (req, res) => {
   try {
-    const { user_id, domain, name, alias } = req.body || {};
+    const { user_id, domain, name, alias, mailbox_type } = req.body || {};
     const userId = user_id || req.user.id;
 
     if (!domain || !name) {
       return res.status(400).json({ success: false, error: 'missing domain or name' });
+    }
+
+    // Validate mailbox_type (default to encrypted for backward compatibility)
+    const type = mailbox_type || 'encrypted';
+    if (!['encrypted', 'simple'].includes(type)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'mailbox_type must be "encrypted" or "simple"' 
+      });
     }
 
     // Check permission
@@ -174,12 +183,13 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
       return res.status(400).json({ success: false, error: 'domain not verified for user' });
     }
 
-    // Create vaultbox
+    // Create vaultbox with type
     const vaultboxData = {
       user_id: userId,
       domain: domainLower,
       name: name.trim(),
       alias: alias ? alias.trim().toLowerCase() : null,
+      mailbox_type: type,
       status: 'active',
       smtp_enabled: false
     };
@@ -187,16 +197,40 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
     const result = await adapters.storage.insert('vaultboxes', vaultboxData);
     const vaultboxId = result.id;
 
-    // Add MTA routing for the specific email address (not domain-wide)
+    // Create Maildir structure for encrypted mailboxes
+    if (type === 'encrypted') {
+      try {
+        const fs = require('fs');
+        const maildirPath = `/var/mail/vaultboxes/${vaultboxId}/Maildir`;
+        
+        // Create Maildir folders
+        fs.mkdirSync(`${maildirPath}/tmp`, { recursive: true });
+        fs.mkdirSync(`${maildirPath}/new`, { recursive: true });
+        fs.mkdirSync(`${maildirPath}/cur`, { recursive: true });
+        
+        // Set ownership to vmail:vmail (uid/gid 5000)
+        const { execSync } = require('child_process');
+        execSync(`chown -R vmail:vmail /var/mail/vaultboxes/${vaultboxId}`);
+        execSync(`chmod -R 700 /var/mail/vaultboxes/${vaultboxId}`);
+        
+        console.log(`[EncimapAPI] Created Maildir structure for ${vaultboxId}`);
+      } catch (maildirError) {
+        console.error(`[EncimapAPI] Failed to create Maildir for ${vaultboxId}:`, maildirError.message);
+        // Continue - can be created later manually if needed
+      }
+    }
+
+    // Add MTA routing based on mailbox type
     try {
       if (alias) {
-        // Create email-specific routing: alias@domain -> vaultbox
         const emailAddress = `${alias}@${domainLower}`;
+        const routeType = type === 'encrypted' ? 'encrypted_imap' : 'simple_imap';
+        
         await adapters.mta.addEmailRoute(emailAddress, vaultboxId, {
           priority: 10,
-          route_type: 'encrypted_imap'
+          route_type: routeType
         });
-        console.log(`[EncimapAPI] Added email-specific route: ${emailAddress} -> ${vaultboxId}`);
+        console.log(`[EncimapAPI] Added ${type} email route: ${emailAddress} -> ${vaultboxId}`);
       } else {
         console.warn('[EncimapAPI] No alias provided, skipping MTA route creation');
       }
@@ -205,14 +239,16 @@ app.post('/s2s/v1/vaultboxes', async (req, res) => {
       // Continue - vaultbox is created, routing can be fixed later
     }
 
-    console.log(`[EncimapAPI] Created vaultbox ${vaultboxId} for domain ${domainLower}`);
+    console.log(`[EncimapAPI] Created ${type} mailbox ${vaultboxId} for ${domainLower}`);
     
     res.json({
       success: true,
       data: {
         vaultbox_id: vaultboxId,
+        id: vaultboxId,
         domain: domainLower,
         name: name.trim(),
+        mailbox_type: type,
         has_certs: false,
         smtp_enabled: false
       } 
@@ -1000,8 +1036,23 @@ Files included:
 
 Installation:
 1. Install encrypted-imap.p12 in your mail client (iOS Mail, Apple Mail, Outlook, Thunderbird)
-2. Import smime.crt for S/MIME encryption
-3. Configure IMAP: mail.motorical.com:993 (SSL/TLS)
+   - Tools → Settings → Privacy & Security → Certificates → Manage Certificates
+   - Go to "Your Certificates" tab
+   - Click "Import" and select encrypted-imap.p12
+   - Enter password: ${password}
+   
+2. Import smime.crt for S/MIME encryption (optional, for other users to encrypt emails to you)
+
+3. Configure IMAP:
+   - Server: mail.motorical.com
+   - Port: 4993 (for encrypted mailboxes) or 993 (for simple mailboxes)
+   - Security: SSL/TLS
+   - Authentication: Normal password
+
+4. Restart your mail client
+
+Note: When viewing encrypted messages, Thunderbird will automatically decrypt them using your imported certificate.
+If you see a "security warning" about the self-signed certificate, you can safely ignore it - the encryption still works!
 
 Support: https://motorical.com/docs/encrypted-imap
 `);
