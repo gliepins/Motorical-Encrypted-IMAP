@@ -78,8 +78,15 @@ export class PostfixMTAAdapter extends MTAAdapter {
       // Remove any existing routes for this specific email
       await this.removeEmailRoute(normalizedEmail);
       
-      // Add new email-specific route (takes precedence over domain routes)
-      const transportEntry = `${normalizedEmail}\t${this.encimapPipePrefix}:${vaultboxId}`;
+      // Decide transport based on route_type
+      let transportEntry;
+      if (options.route_type === 'simple_imap' && options.username) {
+        // Route to simple Maildir delivery using IMAP username
+        transportEntry = `${normalizedEmail}\tsimple-maildir:${options.username}`;
+      } else {
+        // Default: encrypted intake pipe routed by vaultboxId
+        transportEntry = `${normalizedEmail}\t${this.encimapPipePrefix}:${vaultboxId}`;
+      }
       this._addLineToFile(this.transportMapPath, transportEntry);
       
       // Update transport map database
@@ -99,7 +106,7 @@ export class PostfixMTAAdapter extends MTAAdapter {
             priority: priority,
             active: true,
             created_at: new Date(),
-            route_type: 'encrypted_imap_email',
+            route_type: options.route_type === 'simple_imap' ? 'simple_imap_email' : 'encrypted_imap_email',
             options: JSON.stringify(options)
           });
         } catch (error) {
@@ -107,10 +114,15 @@ export class PostfixMTAAdapter extends MTAAdapter {
         }
       }
       
-      console.log(`[PostfixMTA] Added email route: ${normalizedEmail} -> ${this.encimapPipePrefix}:${vaultboxId}`);
+      console.log(`[PostfixMTA] Added email route: ${normalizedEmail} -> ${transportEntry.split('\t')[1]}`);
     } catch (error) {
       throw new Error(`Failed to add email route: ${error.message}`);
     }
+  }
+
+  // Explicit helper for simple mailbox routing
+  async addSimpleEmailRoute(emailAddress, username, options = {}) {
+    return this.addEmailRoute(emailAddress, null, { ...options, route_type: 'simple_imap', username });
   }
 
   async removeDomainRoute(domain) {

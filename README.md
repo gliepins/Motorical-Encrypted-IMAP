@@ -38,7 +38,7 @@ Internet Email → MTA → Encrypted IMAP Service → Encrypted Storage → IMAP
 
 ### **Core Components**
 
-- **Intake Engine**: S/MIME encryption of inbound emails
+- **Intake Engine**: S/MIME encryption of inbound emails (per‑address routing)
 - **API Service**: Vaultbox/certificate management with pluggable authentication
 - **Storage Layer**: Encrypted Maildir storage with database abstraction
 - **Adapter System**: Platform integration layer for universal compatibility
@@ -181,7 +181,7 @@ adapters:
   mta:
     type: "postfix"
     config:
-      transport_map: "/etc/postfix/transport"
+      transport_map: "/etc/postfix/transport" # per‑address encimap‑pipe routes only
   
   storage:
     type: "postgresql"
