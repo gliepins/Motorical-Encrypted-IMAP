@@ -1,14 +1,17 @@
 # Motorical Encrypted IMAP
 
-**Universal Inbound Email Encryption** - Zero‑knowledge email encryption for any platform
+**Universal Inbound Email Encryption** - Zero‑knowledge email encryption with adapter architecture
 
 [![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-green.svg)]()
 [![Zero Knowledge](https://img.shields.io/badge/Security-Zero%20Knowledge-blue.svg)]()
-[![Platform Agnostic](https://img.shields.io/badge/Integration-Platform%20Agnostic-orange.svg)]()
+[![Adapter Architecture](https://img.shields.io/badge/Architecture-Adapter%20Based-blue.svg)]()
+[![Open Source](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## 🎯 **Overview**
 
 Motorical Encrypted IMAP provides **automatic server-side encryption** of ANY inbound email without requiring sender cooperation. Unlike existing solutions that need bilateral setup, this system encrypts emails from Gmail, Outlook, or any email provider automatically while maintaining true zero-knowledge storage.
+
+> **Note**: This is a **module with adapter architecture** that is tightly integrated with Motorical in production, but the adapter system enables theoretical integration with other platforms. See [PLUGGABILITY_ASSESSMENT.md](PLUGGABILITY_ASSESSMENT.md) for detailed integration analysis.
 
 ## 📖 **Complete Documentation**
 
@@ -24,14 +27,15 @@ Motorical Encrypted IMAP provides **automatic server-side encryption** of ANY in
 - ✅ **Universal Compatibility**: Works with emails from any provider  
 - ✅ **Zero-Knowledge**: Server never has decryption keys
 - ✅ **Standard Clients**: Compatible with Thunderbird, Apple Mail, Outlook
-- ✅ **Platform Integration**: Pluggable adapter system for any host platform
+- ✅ **Adapter Architecture**: Adapter-based system enables theoretical platform integration
+- ✅ **Production Integration**: Tightly integrated with Motorical platform in production
 
 ## 🏗️ **Architecture**
 
 ```
 Internet Email → MTA → Encrypted IMAP Service → Encrypted Storage → IMAP Client
                               ↓
-                      Pluggable Adapters
+                      Adapter System
                               ↓
               [Auth] [User] [MTA] [Storage]
 ```
@@ -39,27 +43,33 @@ Internet Email → MTA → Encrypted IMAP Service → Encrypted Storage → IMAP
 ### **Core Components**
 
 - **Intake Engine**: S/MIME encryption of inbound emails (per‑address routing)
-- **API Service**: Vaultbox/certificate management with pluggable authentication
+- **API Service**: Vaultbox/certificate management with adapter-based authentication
 - **Storage Layer**: Encrypted Maildir storage with database abstraction
 - **Adapter System**: Platform integration layer for universal compatibility
 
-## 🔌 **Pluggable Architecture**
+## 🔌 **Adapter Architecture**
 
-The adapter system enables integration with any platform:
+The adapter system provides a **clean architecture** that enables theoretical integration with any platform, though the **production configuration** is tightly integrated with Motorical:
 
 ### **Adapter Types**
-- **Authentication**: JWT, API keys, OAuth2, custom auth systems
-- **User Management**: External APIs, databases, LDAP, platform-specific
-- **MTA Integration**: Postfix, Exim, webhooks, custom routing
-- **Storage**: PostgreSQL, MySQL, SQLite, MongoDB
+- **Authentication**: JWT (Motorical), API keys, OAuth2, custom auth systems
+- **User Management**: Motorical database (production), External APIs, databases, LDAP
+- **MTA Integration**: Postfix (production), Exim, webhooks, custom routing
+- **Storage**: PostgreSQL (production), MySQL, SQLite, MongoDB
 
-### **Platform Examples**
-- **WordPress**: Plugin for hosting providers
-- **Laravel/Django**: Package for SaaS platforms
+### **Production Configuration**
+- **Default adapters** are configured for Motorical platform integration
+- **Requires Motorical database** (`motorical_db`) for user/domain/subscription data
+- **Uses Motorical backend API** for authentication and user management
+- **Can be configured** for other platforms by implementing custom adapters
+
+### **Platform Examples** (Theoretical)
+- **WordPress**: Custom adapter implementation
+- **Laravel/Django**: Custom adapter implementation
 - **Enterprise**: Custom adapter implementations  
-- **Standalone**: Self-hosted deployment
+- **Standalone**: Self-hosted deployment with custom adapters
 
-See `/adapters/README.md` for complete adapter documentation.
+See `/adapters/README.md` for complete adapter documentation and [PLUGGABILITY_ASSESSMENT.md](PLUGGABILITY_ASSESSMENT.md) for integration analysis.
 
 ## 🚀 **Quick Start**
 
@@ -127,7 +137,7 @@ adapters:
 ```
 encrypted-imap/
 ├── services/
-│   ├── api/                 # Core API service (pluggable)
+│   ├── api/                 # Core API service (adapter-based)
 │   ├── intake/              # Email intake and encryption
 │   └── core/                # Core encryption functions
 ├── adapters/
@@ -279,7 +289,7 @@ npm run test:adapters
 
 ### **Current Status: Production Ready**
 - ✅ Core encryption engine
-- ✅ Pluggable adapter system
+- ✅ Adapter architecture system
 - ✅ Complete API implementation
 - ✅ IMAP client integration
 - ✅ Production deployment tools
@@ -297,12 +307,29 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🏆 **Why Motorical Encrypted IMAP?**
 
-**Unique in the Market**: The only email encryption solution that automatically encrypts ANY inbound email without requiring sender cooperation, while being pluggable into any existing platform.
+**Unique in the Market**: The only email encryption solution that automatically encrypts ANY inbound email without requiring sender cooperation, with an adapter architecture that enables platform integration.
 
 **Proven Technology**: Production-ready with active customers, enterprise-grade security, and comprehensive documentation.
 
-**Platform Agnostic**: Adapter system enables integration with any technology stack through standardized interfaces.
+**Adapter Architecture**: Clean adapter system demonstrates extensibility patterns and enables theoretical integration with any technology stack through standardized interfaces.
+
+**Transparency**: Open source codebase demonstrates the adapter architecture approach and integration patterns with the Motorical platform.
 
 ---
 
-**Transform any platform into a zero-knowledge email encryption service in minutes, not months.**
+## 🔍 **Transparency & Openness**
+
+This repository is **public** to demonstrate:
+
+- **🏗️ Architecture Transparency**: See how adapter-based modules integrate with platforms
+- **📚 Educational Value**: Learn from production-ready adapter architecture
+- **🔌 Adapter Pattern**: Understand the adapter architecture and integration approach
+- **🤝 Community Trust**: Open codebase shows commitment to transparency
+
+**Note**: While this module is open-source, the main Motorical platform (backend API, frontend, SMTP gateway) remains closed-source for business reasons. This module serves as a **reference implementation** showing adapter architecture and integration patterns.
+
+**Integration Depth**: This module uses an **excellent adapter architecture** that theoretically supports platform-agnostic integration, but the **production configuration is tightly integrated** with Motorical's database and backend API. See [PLUGGABILITY_ASSESSMENT.md](PLUGGABILITY_ASSESSMENT.md) for detailed analysis.
+
+---
+
+**Transform any platform into a zero-knowledge email encryption service with adapter architecture.**
